@@ -8,6 +8,8 @@
 //! The `probe` module provides methods and traits to support auto-detection of media formats from
 //! arbitrary media streams.
 
+use maybe_async::maybe_async;
+
 use crate::errors::{Result, unsupported_error};
 use crate::formats::{FormatOptions, FormatReader};
 use crate::io::{ByteStream, MediaSourceStream};
@@ -113,9 +115,10 @@ pub struct Descriptor {
 
 /// The `Query` trait indicates that the implementer may be registered and capable of
 /// probing.
+#[maybe_async(?Send)]
 pub trait QueryDescriptor {
     /// Returns a list of descriptors.
-    fn query() -> &'static [Descriptor];
+    async fn query() -> &'static [Descriptor];
 
     /// Using the provided context buffer, score calculate and returns a value between 0 and 255
     /// indicating the confidence of the reader in decoding or parsing the source stream.
@@ -183,40 +186,42 @@ impl Default for Probe {
 
 impl Probe {
     const PROBE_SEARCH_LIMIT: u64 = 1 * 1024 * 1024;
-
+    
     /// Register all `Descriptor`s supported by the parameterized type.
-    pub fn register_all<Q: QueryDescriptor>(&mut self) {
-        for descriptor in Q::query() {
+    #[maybe_async]
+    pub async fn register_all<Q: QueryDescriptor>(&mut self) {
+        for descriptor in Q::query().await {
             self.register(descriptor);
         }
     }
-
+    
     /// Register a single `Descriptor`.
     pub fn register(&mut self, descriptor: &Descriptor) {
         // Insert 2-byte prefixes for each marker into the bloom filter.
         for marker in descriptor.markers {
             let mut prefix = [0u8; 2];
-
+            
             match marker.len() {
                 2..=16 => prefix.copy_from_slice(&marker[0..2]),
                 _      => panic!("invalid marker length (only 2-16 bytes supported)."),
             }
-
+            
             self.filter.insert(&prefix);
         }
-
+        
         self.registered.push(*descriptor);
     }
-
+    
     /// Searches the provided `MediaSourceStream` for metadata or a container format.
-    pub fn next(&self, mss: &mut MediaSourceStream) -> Result<Instantiate> {
+    #[maybe_async]
+    pub async fn next(&self, mss: &mut MediaSourceStream) -> Result<Instantiate> {
         let mut win = 0u16;
 
         let init_pos = mss.pos();
         let mut count = 0;
 
         // Scan the stream byte-by-byte. Shifting each byte through a 2-byte window.
-        while let Ok(byte) = mss.read_byte() {
+        while let Ok(byte) = mss.read_byte().await {
             win = (win << 8) | u16::from(byte);
 
             count += 1;
@@ -237,7 +242,7 @@ impl Probe {
                 let mut context = [0u8; 16];
 
                 context[0..2].copy_from_slice(&win.to_be_bytes()[0..2]);
-                mss.read_buf_exact(&mut context[2..])?;
+                mss.read_buf_exact(&mut context[2..]).await?;
 
                 info!(
                     "found a possible stream marker within {:x?} @ {}+{} bytes.",
@@ -286,7 +291,8 @@ impl Probe {
     /// Searches the provided `MediaSourceStream` for a container format. Any metadata that is read
     /// during the search will be queued and attached to the `FormatReader` instance once a
     /// container format is found.
-    pub fn format(
+    #[maybe_async]
+    pub async fn format(
         &self,
         _hint: &Hint,
         mut mss: MediaSourceStream,
@@ -298,7 +304,7 @@ impl Probe {
 
         // Loop over all elements in the stream until a container format is found.
         loop {
-            match self.next(&mut mss)? {
+            match self.next(&mut mss).await? {
                 // If a container format is found, return an instance to it's reader.
                 Instantiate::Format(fmt) => {
                     let format = fmt(mss, format_opts)?;
@@ -334,7 +340,7 @@ macro_rules! support_format {
             markers: $markers,
             score: Self::score,
             inst: Instantiate::Format(|source, opt| {
-                Ok(Box::new(Self::try_new(source, &opt)?))
+                Ok(Box::new(Self::try_new(source, &opt).await?))
             })
         }
     };

@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::default::Default;
 use std::fmt;
 
+use maybe_async::maybe_async;
+
 use crate::audio::{AudioBufferRef, Channels, Layout};
 use crate::errors::{Result, unsupported_error};
 use crate::formats::Packet;
@@ -317,10 +319,11 @@ impl Default for DecoderOptions {
 
 /// A `Decoder` implements a codec's decode algorithm. It consumes `Packet`s and produces
 /// `AudioBuffer`s.
-pub trait Decoder {
+#[maybe_async(?Send)]
+pub trait Decoder: Unpin {
 
     /// Attempts to instantiates a `Decoder` using the provided `CodecParameters`.
-    fn try_new(params: &CodecParameters, options: &DecoderOptions) -> Result<Self>
+    async fn try_new(params: &CodecParameters, options: &DecoderOptions) -> Result<Self>
     where
         Self: Sized;
 
@@ -334,7 +337,7 @@ pub trait Decoder {
 
     /// Decodes a `Packet` of audio data and returns a copy-on-write generic (untyped) audio buffer
     /// of the decoded audio.
-    fn decode(&mut self, packet: &Packet) -> Result<AudioBufferRef>;
+    async fn decode(&mut self, packet: &Packet) -> Result<AudioBufferRef>;
 
     /// Closes a decoder.
     fn close(&mut self);
@@ -369,12 +372,12 @@ impl CodecRegistry {
             codecs: HashMap::new(),
         }
     }
-
+    
     /// Gets the `CodecDescriptor` for a registered codec.
     pub fn get_codec(&self, codec: CodecType) -> Option<&CodecDescriptor> {
         self.codecs.get(&codec)
     }
-
+    
     /// Registers all codecs supported by `Decoder`. If a supported codec was previously registered
     /// by another `Decoder` it will be replaced within the registry.
     pub fn register_all<D: Decoder>(&mut self) {
@@ -382,20 +385,21 @@ impl CodecRegistry {
             self.register(&descriptor);
         }
     }
-
+    
     /// Register a single codec. If the codec was previously registered it will be replaced within
     /// the registry.
     pub fn register(&mut self, descriptor: &CodecDescriptor) {
         self.codecs.insert(descriptor.codec, *descriptor);
     }
-
+    
     /// Searches the registry for a `Decoder` that supports the codec. If one is found, it will be
     /// instantiated with the provided `CodecParameters` and returned. If a `Decoder` could not be
     /// found, or the `CodecParameters` are either insufficient or invalid for the `Decoder`, an
     /// error will be returned.
-    pub fn make(&self, params: &CodecParameters, options: &DecoderOptions)
-        -> Result<Box<dyn Decoder>> {
-
+    #[maybe_async]
+    pub async fn make(&self, params: &CodecParameters, options: &DecoderOptions)
+    -> Result<Box<dyn Decoder>> {
+        
         if let Some(descriptor) = self.codecs.get(&params.codec) {
             Ok((descriptor.inst_func)(params, options)?)
         }
@@ -413,9 +417,9 @@ macro_rules! support_codec {
             codec: $type,
             short_name: $short_name,
             long_name: $long_name,
-            inst_func: |params, opt| {
+            inst_func: |params, opt| async {
                 Ok(Box::new(Self::try_new(&params, &opt)?))
-            }
+            }.await
         }
     };
 }

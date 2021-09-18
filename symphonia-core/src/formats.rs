@@ -8,6 +8,8 @@
 //! The `format` module provides the traits and support structures necessary to implement media
 //! demuxers.
 
+use maybe_async::maybe_async;
+
 use crate::codecs::CodecParameters;
 use crate::errors::Result;
 use crate::io::{BufStream, MediaSourceStream};
@@ -118,11 +120,12 @@ impl Stream {
 /// `FormatReader` provides an Iterator-like interface over packets for easy consumption and
 /// filtering. Seeking will invalidate the assumed state of any decoder processing packets from
 /// `FormatReader` and should be reset after a successful seek operation.
+#[maybe_async(?Send)]
 pub trait FormatReader {
     /// Attempt to instantiate a `FormatReader` using the provided `FormatOptions` and
     /// `MediaSourceStream`. The reader will probe the container to verify format support, determine
     /// the number of contained streams, and read any initial metadata.
-    fn try_new(source: MediaSourceStream, options: &FormatOptions) -> Result<Self>
+    async fn try_new(source: MediaSourceStream, options: &'_ FormatOptions) -> Result<Self>
     where
         Self: Sized;
 
@@ -155,7 +158,7 @@ pub trait FormatReader {
     }
 
     /// Get the next packet from the container.
-    fn next_packet(&mut self) -> Result<Packet>;
+    async fn next_packet(&mut self) -> Result<Packet>;
 }
 
 /// A `Packet` contains a discrete amount of encoded data for a single codec bitstream. The exact

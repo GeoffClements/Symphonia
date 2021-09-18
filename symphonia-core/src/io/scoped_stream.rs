@@ -8,6 +8,8 @@
 use std::cmp;
 use std::io;
 
+use maybe_async::maybe_async;
+
 use super::{ByteStream, FiniteStream};
 
 const OUT_OF_BOUNDS_ERROR_STR: &str = "out of bounds";
@@ -39,8 +41,9 @@ impl<B: ByteStream> ScopedStream<B> {
     }
 
     /// Ignores the remainder of the `ScopedStream`.
-    pub fn ignore(&mut self) -> io::Result<()> {
-        self.inner.ignore_bytes(self.len - self.read)
+    #[maybe_async]
+    pub async fn ignore(&mut self) -> io::Result<()> {
+        self.inner.ignore_bytes(self.len - self.read).await
     }
 
     /// Convert the `ScopedStream` to the inner `ByteStream`.
@@ -66,63 +69,64 @@ impl<B: ByteStream> FiniteStream for ScopedStream<B> {
     }
 }
 
+#[maybe_async(?Send)]
 impl<B: ByteStream,> ByteStream for ScopedStream<B> {
 
     #[inline(always)]
-    fn read_byte(&mut self) -> io::Result<u8> {
+    async fn read_byte(&mut self) -> io::Result<u8> {
         if self.len - self.read < 1 {
             return Err(io::Error::new(io::ErrorKind::Other, OUT_OF_BOUNDS_ERROR_STR));
         }
 
         self.read += 1;
-        self.inner.read_byte()
+        self.inner.read_byte().await
     }
 
     #[inline(always)]
-    fn read_double_bytes(&mut self) -> io::Result<[u8; 2]> {
+    async fn read_double_bytes(&mut self) -> io::Result<[u8; 2]> {
         if self.len - self.read < 2 {
             return Err(io::Error::new(io::ErrorKind::Other, OUT_OF_BOUNDS_ERROR_STR));
         }
 
         self.read += 2;
-        self.inner.read_double_bytes()
+        self.inner.read_double_bytes().await
     }
 
     #[inline(always)]
-    fn read_triple_bytes(&mut self) -> io::Result<[u8; 3]> {
+    async fn read_triple_bytes(&mut self) -> io::Result<[u8; 3]> {
         if self.len - self.read < 3 {
             return Err(io::Error::new(io::ErrorKind::Other, OUT_OF_BOUNDS_ERROR_STR));
         }
 
         self.read += 3;
-        self.inner.read_triple_bytes()
+        self.inner.read_triple_bytes().await
     }
 
     #[inline(always)]
-    fn read_quad_bytes(&mut self) -> io::Result<[u8; 4]> {
+    async fn read_quad_bytes(&mut self) -> io::Result<[u8; 4]> {
         if self.len - self.read < 4 {
             return Err(io::Error::new(io::ErrorKind::Other, OUT_OF_BOUNDS_ERROR_STR));
         }
 
         self.read += 4;
-        self.inner.read_quad_bytes()
+        self.inner.read_quad_bytes().await
     }
 
-    fn read_buf(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    async fn read_buf(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // Limit read_buf() to the remainder of the scoped bytes if buf has a greater length.
         let scoped_len = cmp::min(self.len - self.read, buf.len() as u64) as usize;
-        let result = self.inner.read_buf(&mut buf[0..scoped_len])?;
+        let result = self.inner.read_buf(&mut buf[0..scoped_len]).await?;
         self.read += result as u64;
         Ok(result)
     }
 
-    fn read_buf_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+    async fn read_buf_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
         if self.len - self.read < buf.len() as u64 {
             return Err(io::Error::new(io::ErrorKind::Other, OUT_OF_BOUNDS_ERROR_STR));
         }
 
         self.read += buf.len() as u64;
-        self.inner.read_buf_exact(buf)
+        self.inner.read_buf_exact(buf).await
     }
 
     #[inline(always)]
@@ -141,13 +145,13 @@ impl<B: ByteStream,> ByteStream for ScopedStream<B> {
         Ok(result)
     }
 
-    fn ignore_bytes(&mut self, count: u64) -> io::Result<()> {
+    async fn ignore_bytes(&mut self, count: u64) -> io::Result<()> {
         if self.len - self.read < count {
             return Err(io::Error::new(io::ErrorKind::Other, OUT_OF_BOUNDS_ERROR_STR));
         }
 
         self.read += count;
-        self.inner.ignore_bytes(count)
+        self.inner.ignore_bytes(count).await
     }
 
     #[inline(always)]

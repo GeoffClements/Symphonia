@@ -8,6 +8,8 @@
 use std::cmp;
 use std::io;
 
+use maybe_async::maybe_async;
+
 use crate::util::bits::*;
 use super::{ByteStream, FiniteStream};
 
@@ -186,6 +188,7 @@ macro_rules! jmp16 {
 /// one bit is to be read. If less than 8 bits are used to service a read then the remaining bits
 /// will be saved for later reads. Bits saved from previous reads will be consumed before a new
 /// byte is consumed from the source `ByteStream`.
+#[maybe_async(?Send)]
 pub trait BitReader {
     /// Discards any saved bits and resets the `BitReader` to prepare it for a byte-aligned read
     /// from the source `ByteStream`.
@@ -193,40 +196,40 @@ pub trait BitReader {
 
     /// Ignores one bit from the stream or returns an error.
     #[inline(always)]
-    fn ignore_bit<B: ByteStream>(&mut self, src: &mut B) -> io::Result<()> {
-        self.ignore_bits(src, 1)
+    async fn ignore_bit<B: ByteStream>(&mut self, src: &mut B) -> io::Result<()> {
+        self.ignore_bits(src, 1).await
     }
 
     /// Ignores the specified number of bits from the stream or returns an error.
-    fn ignore_bits<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<()>;
+    async fn ignore_bits<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<()>;
 
     /// Read a single bit as a boolean value or returns an error.
-    fn read_bit<B: ByteStream>(&mut self, src: &mut B) -> io::Result<bool>;
+    async fn read_bit<B: ByteStream>(&mut self, src: &mut B) -> io::Result<bool>;
 
     /// Read up to 32-bits and return them as a u32 or returns an error.
-    fn read_bits_leq32<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<u32>;
+    async fn read_bits_leq32<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<u32>;
 
     /// Reads up to 32-bits and interprets them as a signed two's complement integer or returns an
     /// error.
     #[inline(always)]
-    fn read_bits_leq32_signed<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<i32> {
-        let value = self.read_bits_leq32(src, num_bits)?;
+    async fn read_bits_leq32_signed<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<i32> {
+        let value = self.read_bits_leq32(src, num_bits).await?;
         Ok(sign_extend_leq32_to_i32(value, num_bits))
     }
 
     /// Read up to 64-bits and return them as a u64 or returns an error.
-    fn read_bits_leq64<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<u64>;
+    async fn read_bits_leq64<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<u64>;
 
     /// Reads up to 64-bits and interprets them as a signed two's complement integer or returns an
     /// error.
     #[inline(always)]
-    fn read_bits_leq64_signed<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<i64> {
-        let value = self.read_bits_leq64(src, num_bits)?;
+    async fn read_bits_leq64_signed<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<i64> {
+        let value = self.read_bits_leq64(src, num_bits).await?;
         Ok(sign_extend_leq64_to_i64(value, num_bits))
     }
 
     /// Reads a unary encoded integer up to u32 or returns an error.
-    fn read_unary<B: ByteStream>(&mut self, src: &mut B) -> io::Result<u32>;
+    async fn read_unary<B: ByteStream>(&mut self, src: &mut B) -> io::Result<u32>;
 
     /// Reads a Huffman code from the `ByteStream` using the provided `HuffmanTable` and returns the
     /// decoded value, or an error.
@@ -235,7 +238,7 @@ pub trait BitReader {
     /// potentially an extra byte, past the end of a particular code. These extra bits remain
     /// buffered by the Bitstream for future reads, however, to prevent reading past critical byte
     /// boundaries, `lim_bits` may be provided to limit the maximum number of bits read.
-    fn read_huffman<B: ByteStream, H: huffman::HuffmanEntry>(
+    async fn read_huffman<B: ByteStream, H: huffman::HuffmanEntry>(
         &mut self,
         src: &mut B,
         table: &huffman::HuffmanTable<H>,
@@ -260,13 +263,14 @@ impl BitReaderLtr {
             n_bits_left: 0,
         }
     }
-
+    
+    #[maybe_async(?Send)]
     #[inline(always)]
-    pub fn read_bits_leq8<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<u32> {
+    pub async fn read_bits_leq8<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<u32> {
         debug_assert!(num_bits <= 8);
 
         if self.n_bits_left < num_bits {
-            self.bits = (self.bits << 8) | u32::from(src.read_u8()?);
+            self.bits = (self.bits << 8) | u32::from(src.read_u8().await?);
             self.n_bits_left += 8;
         }
 
@@ -275,6 +279,7 @@ impl BitReaderLtr {
     }
 }
 
+#[maybe_async(?Send)]
 impl BitReader for BitReaderLtr {
     #[inline(always)]
     fn realign(&mut self) {
@@ -282,7 +287,7 @@ impl BitReader for BitReaderLtr {
     }
 
     #[inline(always)]
-    fn ignore_bits<B: ByteStream>(&mut self, src: &mut B, mut num_bits: u32) -> io::Result<()> {
+    async fn ignore_bits<B: ByteStream>(&mut self, src: &mut B, mut num_bits: u32) -> io::Result<()> {
         // If the number of bits to ignore is less than the amount left, simply reduce the amount
         // left.
         if num_bits <= self.n_bits_left {
@@ -295,13 +300,13 @@ impl BitReader for BitReaderLtr {
 
             // Consume 8 bit blocks at a time.
             while num_bits >= 8 {
-                src.read_u8()?;
+                src.read_u8().await?;
                 num_bits -= 8;
             }
 
             // Less than 8 bits remain to be ignored.
             if num_bits > 0 {
-                self.bits = u32::from(src.read_u8()?);
+                self.bits = u32::from(src.read_u8().await?);
                 self.n_bits_left = 8 - num_bits;
             }
             else {
@@ -313,9 +318,9 @@ impl BitReader for BitReaderLtr {
     }
 
     #[inline(always)]
-    fn read_bit<B: ByteStream>(&mut self, src: &mut B) -> io::Result<bool> {
+    async fn read_bit<B: ByteStream>(&mut self, src: &mut B) -> io::Result<bool> {
         if self.n_bits_left == 0 {
-            self.bits = u32::from(src.read_u8()?);
+            self.bits = u32::from(src.read_u8().await?);
             self.n_bits_left = 8;
         }
         self.n_bits_left -= 1;
@@ -324,7 +329,7 @@ impl BitReader for BitReaderLtr {
     }
 
     #[inline(always)]
-    fn read_bits_leq32<B: ByteStream>(&mut self, src: &mut B, mut num_bits: u32) -> io::Result<u32> {
+    async fn read_bits_leq32<B: ByteStream>(&mut self, src: &mut B, mut num_bits: u32) -> io::Result<u32> {
         debug_assert!(num_bits <= 32);
 
         let mask = !(0xffff_ffff_ffff_ffffu64 << num_bits) as u32;
@@ -340,13 +345,13 @@ impl BitReader for BitReaderLtr {
 
             while num_bits >= 8 {
                 res <<= 8;
-                res |= u32::from(src.read_u8()?);
+                res |= u32::from(src.read_u8().await?);
                 num_bits -= 8;
             }
 
             if num_bits > 0 {
                 res <<= num_bits;
-                self.bits = u32::from(src.read_u8()?);
+                self.bits = u32::from(src.read_u8().await?);
                 self.n_bits_left = 8 - num_bits;
                 res |= self.bits >> self.n_bits_left;
             }
@@ -359,29 +364,29 @@ impl BitReader for BitReaderLtr {
     }
 
     #[inline(always)]
-    fn read_bits_leq64<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<u64> {
+    async fn read_bits_leq64<B: ByteStream>(&mut self, src: &mut B, num_bits: u32) -> io::Result<u64> {
         debug_assert!(num_bits <= 64);
 
         if num_bits > 32 {
             let shift = num_bits - 32;
-            let upper = u64::from(self.read_bits_leq32(src, 32)?) << shift;
-            let lower = u64::from(self.read_bits_leq32(src, shift)?);
+            let upper = u64::from(self.read_bits_leq32(src, 32).await?) << shift;
+            let lower = u64::from(self.read_bits_leq32(src, shift).await?);
             Ok(upper | lower)
         }
         else {
-            Ok(u64::from(self.read_bits_leq32(src, num_bits)?))
+            Ok(u64::from(self.read_bits_leq32(src, num_bits).await?))
         }
     }
 
     #[inline(always)]
-    fn read_unary<B: ByteStream>(&mut self, src: &mut B) -> io::Result<u32> {
+    async fn read_unary<B: ByteStream>(&mut self, src: &mut B) -> io::Result<u32> {
         let mut num = 0;
 
         loop {
 
             let zeros =
                 if self.n_bits_left == 0 {
-                    self.bits = u32::from(src.read_u8()?);
+                    self.bits = u32::from(src.read_u8().await?);
                     self.n_bits_left = 8;
 
                     (self.bits as u8).leading_zeros()
@@ -413,7 +418,7 @@ impl BitReader for BitReaderLtr {
     }
 
     #[inline(always)]
-    fn read_huffman<B: ByteStream, H: huffman::HuffmanEntry>(
+    async fn read_huffman<B: ByteStream, H: huffman::HuffmanEntry>(
         &mut self,
         src: &mut B,
         table: &huffman::HuffmanTable<H>,
@@ -433,12 +438,12 @@ impl BitReader for BitReaderLtr {
             n_bits = table.n_init_bits;
             code_len = n_bits;
 
-            let mut entry = table.data[self.read_bits_leq8(src, n_bits)? as usize];
+            let mut entry = table.data[self.read_bits_leq8(src, n_bits).await? as usize];
 
             while entry.is_jump() {
                 n_bits = entry.next_len();
 
-                let prefix = self.read_bits_leq8(src, n_bits)? as usize;
+                let prefix = self.read_bits_leq8(src, n_bits).await? as usize;
                 entry = table.data[entry.jump_offset() + prefix];
 
                 code_len += n_bits;
@@ -455,12 +460,12 @@ impl BitReader for BitReaderLtr {
             // The limit is not constraining the initial look-up in the table, however it may
             // constrain some further look-up. Check the limit before each look-up after the first.
             if table.n_init_bits < lim_bits {
-                let mut entry = table.data[self.read_bits_leq8(src, n_bits)? as usize];
+                let mut entry = table.data[self.read_bits_leq8(src, n_bits).await? as usize];
 
                 while entry.is_jump() && code_len < lim_bits {
                     n_bits = cmp::min(entry.next_len(), lim_bits - code_len);
 
-                    let prefix = self.read_bits_leq8(src, n_bits)? << (entry.next_len() - n_bits);
+                    let prefix = self.read_bits_leq8(src, n_bits).await? << (entry.next_len() - n_bits);
 
                     entry = table.data[entry.jump_offset() + prefix as usize];
 
@@ -472,7 +477,7 @@ impl BitReader for BitReaderLtr {
             // The table's initial lookup length is longer than the limit. Read the remaining bits
             // up-to the limit and try to decode them.
             else {
-                let prefix = (self.read_bits_leq8(src, n_bits)? as usize)
+                let prefix = (self.read_bits_leq8(src, n_bits).await? as usize)
                                 << (table.n_init_bits - lim_bits);
 
                 table.data[prefix]
@@ -506,6 +511,7 @@ impl BitReader for BitReaderLtr {
 /// one bit is to be read. If less than 8 bits are used to service a read then the remaining bits
 /// will be saved for later reads. Bits saved from previous reads will be consumed before a new
 /// byte is consumed from the source `ByteStream`.
+#[maybe_async(?Send)]
 pub trait BitStream {
     /// Discards any saved bits and resets the `BitStream` to prepare it for a byte-aligned read
     /// from the source `ByteStream`.
@@ -513,40 +519,40 @@ pub trait BitStream {
 
     /// Ignores one bit from the stream or returns an error.
     #[inline(always)]
-    fn ignore_bit(&mut self) -> io::Result<()> {
-        self.ignore_bits(1)
+    async fn ignore_bit(&mut self) -> io::Result<()> {
+        self.ignore_bits(1).await
     }
 
     /// Ignores the specified number of bits from the stream or returns an error.
-    fn ignore_bits(&mut self, bit_width: u32) -> io::Result<()>;
+    async fn ignore_bits(&mut self, bit_width: u32) -> io::Result<()>;
 
     /// Read a single bit as a boolean value or returns an error.
-    fn read_bit(&mut self) -> io::Result<bool>;
+    async fn read_bit(&mut self) -> io::Result<bool>;
 
     /// Read up to 32-bits and return them as a u32 or returns an error.
-    fn read_bits_leq32(&mut self, bit_width: u32) -> io::Result<u32>;
+    async fn read_bits_leq32(&mut self, bit_width: u32) -> io::Result<u32>;
 
     /// Reads up to 32-bits and interprets them as a signed two's complement integer or returns an
     /// error.
     #[inline(always)]
-    fn read_bits_leq32_signed(&mut self, bit_width: u32) -> io::Result<i32> {
-        let value = self.read_bits_leq32(bit_width)?;
+    async fn read_bits_leq32_signed(&mut self, bit_width: u32) -> io::Result<i32> {
+        let value = self.read_bits_leq32(bit_width).await?;
         Ok(sign_extend_leq32_to_i32(value, bit_width))
     }
 
     /// Read up to 64-bits and return them as a u64 or returns an error.
-    fn read_bits_leq64(&mut self, bit_width: u32) -> io::Result<u64>;
+    async fn read_bits_leq64(&mut self, bit_width: u32) -> io::Result<u64>;
 
     /// Reads up to 64-bits and interprets them as a signed two's complement integer or returns an
     /// error.
     #[inline(always)]
-    fn read_bits_leq64_signed(&mut self, bit_width: u32) -> io::Result<i64> {
-        let value = self.read_bits_leq64(bit_width)?;
+    async fn read_bits_leq64_signed(&mut self, bit_width: u32) -> io::Result<i64> {
+        let value = self.read_bits_leq64(bit_width).await?;
         Ok(sign_extend_leq64_to_i64(value, bit_width))
     }
 
     /// Reads a unary encoded integer up to u32 or returns an error.
-    fn read_unary(&mut self) -> io::Result<u32>;
+    async fn read_unary(&mut self) -> io::Result<u32>;
 
     /// Reads a Huffman code from the `BitStream` using the provided `HuffmanTable` and returns the
     /// decoded value, or an error.
@@ -555,7 +561,7 @@ pub trait BitStream {
     /// potentially an extra byte, past the end of a particular code. These extra bits remain
     /// buffered by the `BitStream` for future reads, however, to prevent reading past critical byte
     /// boundaries, `lim_bits` may be provided to limit the maximum number of bits read.
-    fn read_huffman<H: huffman::HuffmanEntry>(
+    async fn read_huffman<H: huffman::HuffmanEntry>(
         &mut self,
         table: &huffman::HuffmanTable<H>,
         lim_bits: u32,
@@ -577,6 +583,7 @@ impl<B: ByteStream> BitStreamLtr<B> {
     }
 }
 
+#[maybe_async(?Send)]
 impl<B: ByteStream> BitStream for BitStreamLtr<B> {
     #[inline(always)]
     fn realign(&mut self) {
@@ -584,37 +591,37 @@ impl<B: ByteStream> BitStream for BitStreamLtr<B> {
     }
 
     #[inline(always)]
-    fn ignore_bits(&mut self, bit_width: u32) -> io::Result<()> {
-        self.reader.ignore_bits(&mut self.inner, bit_width)
+    async fn ignore_bits(&mut self, bit_width: u32) -> io::Result<()> {
+        self.reader.ignore_bits(&mut self.inner, bit_width).await
     }
 
     #[inline(always)]
-    fn read_bit(&mut self) -> io::Result<bool> {
-        self.reader.read_bit(&mut self.inner)
+    async fn read_bit(&mut self) -> io::Result<bool> {
+        self.reader.read_bit(&mut self.inner).await
     }
 
     #[inline(always)]
-    fn read_bits_leq32(&mut self, bit_width: u32) -> io::Result<u32> {
-        self.reader.read_bits_leq32(&mut self.inner, bit_width)
+    async fn read_bits_leq32(&mut self, bit_width: u32) -> io::Result<u32> {
+        self.reader.read_bits_leq32(&mut self.inner, bit_width).await
     }
 
     #[inline(always)]
-    fn read_bits_leq64(&mut self, bit_width: u32) -> io::Result<u64> {
-        self.reader.read_bits_leq64(&mut self.inner, bit_width)
+    async fn read_bits_leq64(&mut self, bit_width: u32) -> io::Result<u64> {
+        self.reader.read_bits_leq64(&mut self.inner, bit_width).await
     }
 
     #[inline(always)]
-    fn read_unary(&mut self) -> io::Result<u32> {
-        self.reader.read_unary(&mut self.inner)
+    async fn read_unary(&mut self) -> io::Result<u32> {
+        self.reader.read_unary(&mut self.inner).await
     }
 
     #[inline(always)]
-    fn read_huffman<H: huffman::HuffmanEntry>(
+    async fn read_huffman<H: huffman::HuffmanEntry>(
         &mut self,
         table: &huffman::HuffmanTable<H>,
         lim_bits: u32,
     ) -> io::Result<(H::ValueType, u32)> {
-        self.reader.read_huffman(&mut self.inner, table, lim_bits)
+        self.reader.read_huffman(&mut self.inner, table, lim_bits).await
     }
 }
 
@@ -632,6 +639,7 @@ where
     }
 }
 
+#[cfg(feature = "is_sync")]
 #[cfg(test)]
 mod tests {
     use crate::io::BufStream;

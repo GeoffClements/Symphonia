@@ -1,19 +1,27 @@
 [package]
-name = "symphonia-core"
-version = "0.2.0"
-description = "Project Symphonia shared structs, traits, and features."
-homepage = "https://github.com/pdeljanov/Symphonia"
-repository = "https://github.com/pdeljanov/Symphonia"
 authors = ["Philip Deljanov <philip.deljanov@gmail.com>"]
-license = "MPL-2.0"
-readme = "README.md"
 categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
-keywords = ["audio", "codec", "decoder", "multimedia", "media"]
+description = "Project Symphonia shared structs, traits, and features."
 edition = "2018"
+homepage = "https://github.com/pdeljanov/Symphonia"
+keywords = ["audio", "codec", "decoder", "multimedia", "media"]
+license = "MPL-2.0"
+name = "symphonia-core"
+readme = "README.md"
+repository = "https://github.com/pdeljanov/Symphonia"
+version = "0.2.0"
 
 [dependencies]
 arrayvec = "0.6.0"
+async-std = "1.9"
+async-trait = "0.1"
 bitflags = "1.2.1"
 byteorder = "1.4.3"
 lazy_static = "1.4.0"
 log = "0.4"
+maybe-async = "0.2"
+pin-project = "1.0"
+
+[features]
+# default = ["is_sync"]
+is_sync = ["maybe-async/is_sync"]

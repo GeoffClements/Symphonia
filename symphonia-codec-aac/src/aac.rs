@@ -14,6 +14,8 @@
 use std::f32::consts;
 use std::fmt;
 
+use maybe_async::maybe_async;
+
 use symphonia_core::errors::{decode_error, unsupported_error, Result};
 use symphonia_core::io::{huffman::*, BitStream, FiniteBitStream, BitStreamLtr, BufStream};
 use symphonia_core::audio::{AudioBuffer, AudioBufferRef, AsAudioBufferRef, Signal, SignalSpec};
@@ -95,10 +97,11 @@ impl M4AInfo {
         }
     }
 
-    fn read_object_type<B: BitStream>(bs: &mut B) -> Result<M4AType> {
-        let otypeidx = match bs.read_bits_leq32(5)? {
+    #[maybe_async]
+    async fn read_object_type<B: BitStream>(bs: &mut B) -> Result<M4AType> {
+        let otypeidx = match bs.read_bits_leq32(5).await? {
             idx if idx < 31 => idx as usize,
-            31 => (bs.read_bits_leq32(6)? + 32) as usize,
+            31 => (bs.read_bits_leq32(6).await? + 32) as usize,
             _ => unreachable!(),
         };
 
@@ -109,18 +112,20 @@ impl M4AInfo {
         }
     }
 
-    fn read_sampling_frequency<B: BitStream>(bs: &mut B) -> Result<u32> {
-        match bs.read_bits_leq32(4)? {
+    #[maybe_async]
+    async fn read_sampling_frequency<B: BitStream>(bs: &mut B) -> Result<u32> {
+        match bs.read_bits_leq32(4).await? {
             idx if idx < 15 => Ok(AAC_SAMPLE_RATES[idx as usize]),
             _ => {
-                let srate = (0xf << 20) & bs.read_bits_leq32(20)?;
+                let srate = (0xf << 20) & bs.read_bits_leq32(20).await?;
                 Ok(srate)
             }
         }
     }
-
-    fn read_channel_config<B: BitStream>(bs: &mut B) -> Result<usize> {
-        let chidx = bs.read_bits_leq32(4)? as usize;
+    
+    #[maybe_async]
+    async fn read_channel_config<B: BitStream>(bs: &mut B) -> Result<usize> {
+        let chidx = bs.read_bits_leq32(4).await? as usize;
         if chidx < AAC_CHANNELS.len() {
             Ok(AAC_CHANNELS[chidx])
         }
@@ -128,23 +133,24 @@ impl M4AInfo {
             Ok(chidx)
         }
     }
-
-    fn read(&mut self, buf: &[u8]) -> Result<()> {
+    
+    #[maybe_async]
+    async fn read(&mut self, buf: &[u8]) -> Result<()> {
         let mut bs = BitStreamLtr::new(BufStream::new(buf));
 
-        self.otype = Self::read_object_type(&mut bs)?;
-        self.srate = Self::read_sampling_frequency(&mut bs)?;
+        self.otype = Self::read_object_type(&mut bs).await?;
+        self.srate = Self::read_sampling_frequency(&mut bs).await?;
 
         validate!(self.srate > 0);
 
-        self.channels = Self::read_channel_config(&mut bs)?;
+        self.channels = Self::read_channel_config(&mut bs).await?;
 
         if (self.otype == M4AType::SBR) || (self.otype == M4AType::PS) {
-            let ext_srate = Self::read_sampling_frequency(&mut bs)?;
-            self.otype = Self::read_object_type(&mut bs)?;
+            let ext_srate = Self::read_sampling_frequency(&mut bs).await?;
+            self.otype = Self::read_object_type(&mut bs).await?;
 
             let ext_chans = if self.otype == M4AType::ER_BSAC {
-                Self::read_channel_config(&mut bs)?
+                Self::read_channel_config(&mut bs).await?
             }
             else {
                 0
@@ -166,30 +172,30 @@ impl M4AInfo {
             | M4AType::ER_BSAC
             | M4AType::ER_AAC_LD => {
                 // GASpecificConfig
-                let short_frame = bs.read_bit()?;
+                let short_frame = bs.read_bit().await?;
 
                 self.samples = if short_frame { 960 } else { 1024 };
 
-                let depends_on_core = bs.read_bit()?;
+                let depends_on_core = bs.read_bit().await?;
 
                 if depends_on_core {
-                    let _delay = bs.read_bits_leq32(14)?;
+                    let _delay = bs.read_bits_leq32(14).await?;
                 }
 
-                let extension_flag = bs.read_bit()?;
+                let extension_flag = bs.read_bit().await?;
 
                 if self.channels == 0 {
                     return unsupported_error("program config element");
                 }
 
                 if (self.otype == M4AType::Scalable) || (self.otype == M4AType::ER_AAC_Scalable) {
-                    let _layer = bs.read_bits_leq32(3)?;
+                    let _layer = bs.read_bits_leq32(3).await?;
                 }
 
                 if extension_flag {
                     if self.otype == M4AType::ER_BSAC {
-                        let _num_subframes = bs.read_bits_leq32(5)? as usize;
-                        let _layer_length = bs.read_bits_leq32(11)?;
+                        let _num_subframes = bs.read_bits_leq32(5).await? as usize;
+                        let _layer_length = bs.read_bits_leq32(11).await?;
                     }
 
                     if (self.otype == M4AType::ER_AAC_LC)
@@ -197,12 +203,12 @@ impl M4AInfo {
                         || (self.otype == M4AType::ER_AAC_Scalable)
                         || (self.otype == M4AType::ER_AAC_LD)
                     {
-                        let _section_data_resilience = bs.read_bit()?;
-                        let _scalefactors_resilience = bs.read_bit()?;
-                        let _spectral_data_resilience = bs.read_bit()?;
+                        let _section_data_resilience = bs.read_bit().await?;
+                        let _scalefactors_resilience = bs.read_bit().await?;
+                        let _spectral_data_resilience = bs.read_bit().await?;
                     }
 
-                    let extension_flag3 = bs.read_bit()?;
+                    let extension_flag3 = bs.read_bit().await?;
 
                     if extension_flag3 {
                         return unsupported_error("version3 extensions");
@@ -274,7 +280,7 @@ impl M4AInfo {
             | M4AType::ER_HILN
             | M4AType::ER_Parametric
             | M4AType::ER_AAC_ELD => {
-                let ep_config = bs.read_bits_leq32(2)?;
+                let ep_config = bs.read_bits_leq32(2).await?;
 
                 if (ep_config == 2) || (ep_config == 3) {
                     return unsupported_error("error protection config");
@@ -288,28 +294,28 @@ impl M4AInfo {
         };
 
         if self.sbr_ps_info.is_some() && (bs.bits_left() >= 16) {
-            let sync = bs.read_bits_leq32(11)?;
+            let sync = bs.read_bits_leq32(11).await?;
 
             if sync == 0x2B7 {
-                let ext_otype = Self::read_object_type(&mut bs)?;
+                let ext_otype = Self::read_object_type(&mut bs).await?;
                 if ext_otype == M4AType::SBR {
-                    self.sbr_present = bs.read_bit()?;
+                    self.sbr_present = bs.read_bit().await?;
                     if self.sbr_present {
-                        let _ext_srate = Self::read_sampling_frequency(&mut bs)?;
+                        let _ext_srate = Self::read_sampling_frequency(&mut bs).await?;
                         if bs.bits_left() >= 12 {
-                            let sync = bs.read_bits_leq32(11)?;
+                            let sync = bs.read_bits_leq32(11).await?;
                             if sync == 0x548 {
-                                self.ps_present = bs.read_bit()?;
+                                self.ps_present = bs.read_bit().await?;
                             }
                         }
                     }
                 }
                 if ext_otype == M4AType::PS {
-                    self.sbr_present = bs.read_bit()?;
+                    self.sbr_present = bs.read_bit().await?;
                     if self.sbr_present {
-                        let _ext_srate = Self::read_sampling_frequency(&mut bs)?;
+                        let _ext_srate = Self::read_sampling_frequency(&mut bs).await?;
                     }
-                    let _ext_channels = bs.read_bits_leq32(4)?;
+                    let _ext_channels = bs.read_bits_leq32(4).await?;
                 }
             }
         }
@@ -367,15 +373,16 @@ impl ICSInfo {
             long_win: true,
         }
     }
-    fn decode_ics_info<B: BitStream>(&mut self, bs: &mut B) -> Result<()> {
+    #[maybe_async]
+    async fn decode_ics_info<B: BitStream>(&mut self, bs: &mut B) -> Result<()> {
         self.prev_window_sequence = self.window_sequence;
         self.prev_window_shape = self.window_shape;
 
-        if bs.read_bit()? {
+        if bs.read_bit().await? {
             return decode_error("ics reserved bit set");
         }
 
-        self.window_sequence = bs.read_bits_leq32(2)? as u8;
+        self.window_sequence = bs.read_bits_leq32(2).await? as u8;
 
         match self.prev_window_sequence {
             ONLY_LONG_SEQUENCE | LONG_STOP_SEQUENCE => {
@@ -393,16 +400,16 @@ impl ICSInfo {
             _ => {}
         };
 
-        self.window_shape = bs.read_bit()?;
+        self.window_shape = bs.read_bit().await?;
         self.window_groups = 1;
 
         if self.window_sequence == EIGHT_SHORT_SEQUENCE {
             self.long_win = false;
             self.num_windows = 8;
-            self.max_sfb = bs.read_bits_leq32(4)? as usize;
+            self.max_sfb = bs.read_bits_leq32(4).await? as usize;
 
             for i in 0..MAX_WINDOWS - 1 {
-                self.scale_factor_grouping[i] = bs.read_bit()?;
+                self.scale_factor_grouping[i] = bs.read_bit().await?;
 
                 if !self.scale_factor_grouping[i] {
                     self.group_start[self.window_groups] = i + 1;
@@ -413,8 +420,8 @@ impl ICSInfo {
         else {
             self.long_win = true;
             self.num_windows = 1;
-            self.max_sfb = bs.read_bits_leq32(6)? as usize;
-            self.predictor_data = LTPData::read(bs)?;
+            self.max_sfb = bs.read_bits_leq32(6).await? as usize;
+            self.predictor_data = LTPData::read(bs).await?;
         }
         Ok(())
     }
@@ -441,8 +448,9 @@ impl ICSInfo {
 struct LTPData {}
 
 impl LTPData {
-    fn read<B: BitStream>(bs: &mut B) -> Result<Option<Self>> {
-        let predictor_data_present = bs.read_bit()?;
+    #[maybe_async]
+    async fn read<B: BitStream>(bs: &mut B) -> Result<Option<Self>> {
+        let predictor_data_present = bs.read_bit().await?;
         if !predictor_data_present {
             return Ok(None);
         }
@@ -484,19 +492,20 @@ struct PulseData {
 }
 
 impl PulseData {
-    fn read<B: BitStream>(bs: &mut B) -> Result<Option<Self>> {
-        let pulse_data_present = bs.read_bit()?;
+    #[maybe_async]
+    async fn read<B: BitStream>(bs: &mut B) -> Result<Option<Self>> {
+        let pulse_data_present = bs.read_bit().await?;
         if !pulse_data_present {
             return Ok(None);
         }
 
-        let number_pulse = (bs.read_bits_leq32(2)? as usize) + 1;
-        let pulse_start_sfb = bs.read_bits_leq32(6)? as usize;
+        let number_pulse = (bs.read_bits_leq32(2).await? as usize) + 1;
+        let pulse_start_sfb = bs.read_bits_leq32(6).await? as usize;
         let mut pulse_offset: [u8; 4] = [0; 4];
         let mut pulse_amp: [u8; 4] = [0; 4];
         for i in 0..number_pulse {
-            pulse_offset[i] = bs.read_bits_leq32(5)? as u8;
-            pulse_amp[i] = bs.read_bits_leq32(4)? as u8;
+            pulse_offset[i] = bs.read_bits_leq32(5).await? as u8;
+            pulse_amp[i] = bs.read_bits_leq32(4).await? as u8;
         }
         Ok(Some(Self {
             number_pulse,
@@ -530,19 +539,20 @@ impl TNSCoeffs {
             coef: [0.0; TNS_MAX_ORDER + 1],
         }
     }
-    fn read<B: BitStream>(
+    #[maybe_async]
+    async fn read<B: BitStream>(
         &mut self,
         bs: &mut B,
         long_win: bool,
         coef_res: bool,
         max_order: usize,
     ) -> Result<()> {
-        self.length = bs.read_bits_leq32(if long_win { 6 } else { 4 })? as usize;
-        self.order = bs.read_bits_leq32(if long_win { 5 } else { 3 })? as usize;
+        self.length = bs.read_bits_leq32(if long_win { 6 } else { 4 }).await? as usize;
+        self.order = bs.read_bits_leq32(if long_win { 5 } else { 3 }).await? as usize;
         validate!(self.order <= max_order);
         if self.order > 0 {
-            self.direction = bs.read_bit()?;
-            self.compress = bs.read_bit()?;
+            self.direction = bs.read_bit().await?;
+            self.compress = bs.read_bit().await?;
             let mut coef_bits = 3;
             if coef_res {
                 coef_bits += 1;
@@ -560,7 +570,7 @@ impl TNSCoeffs {
             let mut tmp: [f32; TNS_MAX_ORDER] = [0.0; TNS_MAX_ORDER];
 
             for el in tmp.iter_mut().take(self.order) {
-                let val = bs.read_bits_leq32(coef_bits)? as u8;
+                let val = bs.read_bits_leq32(coef_bits).await? as u8;
 
                 // Convert to signed integer.
                 let c = f32::from(if (val & sign_mask) != 0 {
@@ -600,13 +610,14 @@ struct TNSData {
 }
 
 impl TNSData {
-    fn read<B: BitStream>(
+    #[maybe_async]
+    async fn read<B: BitStream>(
         bs: &mut B,
         long_win: bool,
         num_windows: usize,
         max_order: usize,
     ) -> Result<Option<Self>> {
-        let tns_data_present = bs.read_bit()?;
+        let tns_data_present = bs.read_bit().await?;
         if !tns_data_present {
             return Ok(None);
         }
@@ -614,12 +625,12 @@ impl TNSData {
         let mut coef_res: [bool; MAX_WINDOWS] = [false; MAX_WINDOWS];
         let mut coeffs: [[TNSCoeffs; 4]; MAX_WINDOWS] = [[TNSCoeffs::new(); 4]; MAX_WINDOWS];
         for w in 0..num_windows {
-            n_filt[w] = bs.read_bits_leq32(if long_win { 2 } else { 1 })? as usize;
+            n_filt[w] = bs.read_bits_leq32(if long_win { 2 } else { 1 }).await? as usize;
             if n_filt[w] != 0 {
-                coef_res[w] = bs.read_bit()?;
+                coef_res[w] = bs.read_bit().await?;
             }
             for filt in 0..n_filt[w] {
-                coeffs[w][filt].read(bs, long_win, coef_res[w], max_order)?;
+                coeffs[w][filt].read(bs, long_win, coef_res[w], max_order).await?;
             }
         }
         Ok(Some(Self {
@@ -637,8 +648,9 @@ struct GainControlData {
 }
 
 impl GainControlData {
-    fn read<B: BitStream>(bs: &mut B) -> Result<Option<Self>> {
-        let gain_control_data_present = bs.read_bit()?;
+    #[maybe_async]
+    async fn read<B: BitStream>(bs: &mut B) -> Result<Option<Self>> {
+        let gain_control_data_present = bs.read_bit().await?;
         if !gain_control_data_present {
             return Ok(None);
         }
@@ -712,7 +724,8 @@ impl ICS {
         }
     }
 
-    fn decode_section_data<B: BitStream>(
+    #[maybe_async]
+    async fn decode_section_data<B: BitStream>(
         &mut self,
         bs: &mut B
     ) -> Result<()> {
@@ -724,7 +737,7 @@ impl ICS {
             let mut l = 0;
 
             while k < self.info.max_sfb {
-                self.sect_cb[g][l] = bs.read_bits_leq32(4)? as u8;
+                self.sect_cb[g][l] = bs.read_bits_leq32(4).await? as u8;
                 self.sect_len[g][l] = 0;
 
                 if self.sect_cb[g][l] == RESERVED_HCB {
@@ -732,7 +745,7 @@ impl ICS {
                 }
 
                 loop {
-                    let sect_len_incr = bs.read_bits_leq32(sect_bits)? as usize;
+                    let sect_len_incr = bs.read_bits_leq32(sect_bits).await? as usize;
 
                     self.sect_len[g][l] += sect_len_incr;
 
@@ -776,7 +789,8 @@ impl ICS {
         self.sfb_cb[g][sfb] == INTENSITY_HCB
     }
 
-    fn decode_scale_factor_data<B: BitStream>(&mut self, bs: &mut B) -> Result<()> {
+    #[maybe_async]
+    async fn decode_scale_factor_data<B: BitStream>(&mut self, bs: &mut B) -> Result<()> {
         let mut noise_pcm_flag = true;
         let mut scf_intensity = 0i16;
         let mut scf_noise = i16::from(self.global_gain) - 90;
@@ -790,7 +804,7 @@ impl ICS {
                 }
                 else if self.is_intensity(g, sfb) {
                     // TODO: Fix lim_bits.
-                    scf_intensity += i16::from(bs.read_huffman(&SCF_TABLE, 100)?.0) - 60;
+                    scf_intensity += i16::from(bs.read_huffman(&SCF_TABLE, 100).await?.0) - 60;
 
                     validate!(
                         (scf_intensity >= INTENSITY_SCALE_MIN)
@@ -802,11 +816,11 @@ impl ICS {
                 else if self.is_noise(g, sfb) {
                     if noise_pcm_flag {
                         noise_pcm_flag = false;
-                        scf_noise += (bs.read_bits_leq32(9)? as i16) - 256;
+                        scf_noise += (bs.read_bits_leq32(9).await? as i16) - 256;
                     }
                     else {
                         // TODO: Fix lim_bits.
-                        scf_noise += i16::from(bs.read_huffman(&SCF_TABLE, 100)?.0) - 60;
+                        scf_noise += i16::from(bs.read_huffman(&SCF_TABLE, 100).await?.0) - 60;
                     }
 
                     validate!(
@@ -817,7 +831,7 @@ impl ICS {
                 }
                 else {
                     // TODO: Fix lim_bits.
-                    scf_normal += i16::from(bs.read_huffman(&SCF_TABLE, 100)?.0) - 60;
+                    scf_normal += i16::from(bs.read_huffman(&SCF_TABLE, 100).await?.0) - 60;
                     validate!((scf_normal >= 0) && (scf_normal < 255));
 
                     get_scale(scf_normal - 100)
@@ -846,7 +860,8 @@ impl ICS {
         }
     }
 
-    fn decode_spectrum<B: BitStream>(&mut self, bs: &mut B) -> Result<()> {
+    #[maybe_async]
+    async fn decode_spectrum<B: BitStream>(&mut self, bs: &mut B) -> Result<()> {
         // Zero all spectral coefficients.
         self.coeffs = [0.0; 1024];
         for g in 0..self.info.window_groups {
@@ -871,7 +886,7 @@ impl ICS {
                             let cb = SPEC_TABLES[(cb_idx - 1) as usize];
 
                             if cb_idx < FIRST_PAIR_HCB {
-                                decode_quads(bs, cb, unsigned, scale, dst)?;
+                                decode_quads(bs, cb, unsigned, scale, dst).await?;
                             }
                             else {
                                 decode_pairs(
@@ -882,7 +897,7 @@ impl ICS {
                                     AAC_CODEBOOK_MODULO[(cb_idx - FIRST_PAIR_HCB) as usize],
                                     scale,
                                     dst,
-                                )?;
+                                ).await?;
                             }
                         }
                     };
@@ -931,23 +946,24 @@ impl ICS {
         }
     }
 
-    fn decode_ics<B: BitStream>(
+    #[maybe_async]
+    async fn decode_ics<B: BitStream>(
         &mut self,
         bs: &mut B,
         m4atype: M4AType,
         common_window: bool
     ) -> Result<()> {
-        self.global_gain = bs.read_bits_leq32(8)? as u8;
+        self.global_gain = bs.read_bits_leq32(8).await? as u8;
 
         if !common_window {
-            self.info.decode_ics_info(bs)?;
+            self.info.decode_ics_info(bs).await?;
         }
 
-        self.decode_section_data(bs)?;
+        self.decode_section_data(bs).await?;
 
-        self.decode_scale_factor_data(bs)?;
+        self.decode_scale_factor_data(bs).await?;
 
-        self.pulse_data = PulseData::read(bs)?;
+        self.pulse_data = PulseData::read(bs).await?;
         validate!(self.pulse_data.is_none() || self.info.long_win);
 
         // Table 4.156
@@ -962,17 +978,17 @@ impl ICS {
         };
 
         self.tns_data =
-            TNSData::read(bs, self.info.long_win, self.info.num_windows, tns_max_order)?;
+            TNSData::read(bs, self.info.long_win, self.info.num_windows, tns_max_order).await?;
 
         match m4atype {
-            M4AType::SSR => self.gain_control = GainControlData::read(bs)?,
+            M4AType::SSR => self.gain_control = GainControlData::read(bs).await?,
             _ => {
-                let gain_control_data_present = bs.read_bit()?;
+                let gain_control_data_present = bs.read_bit().await?;
                 validate!(!gain_control_data_present);
             }
         }
 
-        self.decode_spectrum(bs)?;
+        self.decode_spectrum(bs).await?;
         Ok(())
     }
 
@@ -1098,7 +1114,8 @@ fn decode_spectrum_noise(lcg: &mut Lcg, sf: f32, dst: &mut [f32]) {
     }
 }
 
-fn decode_quads<B: BitStream>(
+#[maybe_async]
+async fn decode_quads<B: BitStream>(
     bs: &mut B,
     cb: &'static HuffmanTable<H16>,
     unsigned: bool,
@@ -1110,13 +1127,13 @@ fn decode_quads<B: BitStream>(
 
     for out in dst.chunks_mut(4) {
         // TODO: Fix lim_bits
-        let cw = bs.read_huffman(cb, 100)?.0 as usize;
+        let cw = bs.read_huffman(cb, 100).await?.0 as usize;
         if unsigned {
             for i in 0..4 {
                 let val = AAC_QUADS[cw][i];
 
                 if val != 0 {
-                    if bs.read_bit()? {
+                    if bs.read_bit().await? {
                         out[i] = -pow43_table[val as usize] * scale;
                     }
                     else {
@@ -1141,7 +1158,8 @@ fn decode_quads<B: BitStream>(
     Ok(())
 }
 
-fn decode_pairs<B: BitStream>(
+#[maybe_async]
+async fn decode_pairs<B: BitStream>(
     bs: &mut B,
     cb: &'static HuffmanTable<H16>,
     unsigned: bool,
@@ -1155,16 +1173,16 @@ fn decode_pairs<B: BitStream>(
 
     for out in dst.chunks_mut(2) {
         // TODO: Fix lim_bits
-        let cw = bs.read_huffman(cb, 100)?.0;
+        let cw = bs.read_huffman(cb, 100).await?.0;
 
         let mut x = (cw / modulo) as i16;
         let mut y = (cw % modulo) as i16;
 
         if unsigned {
-            if x != 0 && bs.read_bit()? {
+            if x != 0 && bs.read_bit().await? {
                 x = -x;
             }
-            if y != 0 && bs.read_bit()? {
+            if y != 0 && bs.read_bit().await? {
                 y = -y;
             }
         }
@@ -1175,10 +1193,10 @@ fn decode_pairs<B: BitStream>(
 
         if escape {
             if (x == 16) || (x == -16) {
-                x = read_escape(bs, x > 0)?;
+                x = read_escape(bs, x > 0).await?;
             }
             if (y == 16) || (y == -16) {
-                y = read_escape(bs, y > 0)?;
+                y = read_escape(bs, y > 0).await?;
             }
         }
 
@@ -1188,17 +1206,18 @@ fn decode_pairs<B: BitStream>(
     Ok(())
 }
 
-fn read_escape<B: BitStream>(bs: &mut B, is_pos: bool) -> Result<i16> {
+#[maybe_async]
+async fn read_escape<B: BitStream>(bs: &mut B, is_pos: bool) -> Result<i16> {
     // TODO: Move into BitReaderLtr
     let mut n = 0;
-    while bs.read_bit()? == true {
+    while bs.read_bit().await? == true {
         n += 1;
     }
 
     validate!(n < 9);
 
     // The escape word is added to 2^(n + 4) to yield the unsigned value.
-    let word = (1 << (n + 4)) + bs.read_bits_leq32(n + 4)? as i16;
+    let word = (1 << (n + 4)) + bs.read_bits_leq32(n + 4).await? as i16;
 
     if is_pos {
         Ok(word)
@@ -1232,27 +1251,29 @@ impl ChannelPair {
         }
     }
 
-    fn decode_ga_sce<B: BitStream>(&mut self, bs: &mut B, m4atype: M4AType) -> Result<()> {
-        self.ics0.decode_ics(bs, m4atype, false)?;
+    #[maybe_async]
+    async fn decode_ga_sce<B: BitStream>(&mut self, bs: &mut B, m4atype: M4AType) -> Result<()> {
+        self.ics0.decode_ics(bs, m4atype, false).await?;
         Ok(())
     }
 
-    fn decode_ga_cpe<B: BitStream>(&mut self, bs: &mut B, m4atype: M4AType) -> Result<()> {
-        let common_window = bs.read_bit()?;
+    #[maybe_async]
+    async fn decode_ga_cpe<B: BitStream>(&mut self, bs: &mut B, m4atype: M4AType) -> Result<()> {
+        let common_window = bs.read_bit().await?;
         self.common_window = common_window;
 
         if common_window {
-            self.ics0.info.decode_ics_info(bs)?;
+            self.ics0.info.decode_ics_info(bs).await?;
 
             // Mid-side stereo mask decoding.
-            self.ms_mask_present = bs.read_bits_leq32(2)? as u8;
+            self.ms_mask_present = bs.read_bits_leq32(2).await? as u8;
 
             match self.ms_mask_present {
                 0 => (),
                 1 => {
                     for g in 0..self.ics0.info.window_groups {
                         for sfb in 0..self.ics0.info.max_sfb {
-                            self.ms_used[g][sfb] = bs.read_bit()?;
+                            self.ms_used[g][sfb] = bs.read_bit().await?;
                         }
                     }
                 }
@@ -1270,8 +1291,8 @@ impl ChannelPair {
             self.ics1.info = self.ics0.info;
         }
 
-        self.ics0.decode_ics(bs, m4atype, common_window)?;
-        self.ics1.decode_ics(bs, m4atype, common_window)?;
+        self.ics0.decode_ics(bs, m4atype, common_window).await?;
+        self.ics1.decode_ics(bs, m4atype, common_window).await?;
 
         // Joint-stereo decoding
         if common_window && self.ms_mask_present != 0 {
@@ -1533,26 +1554,27 @@ impl AacDecoder {
         Ok(())
     }
 
-    fn decode_ga<B: BitStream + FiniteBitStream>(&mut self, bs: &mut B) -> Result<()> {
+    #[maybe_async]
+    async fn decode_ga<B: BitStream + FiniteBitStream>(&mut self, bs: &mut B) -> Result<()> {
         let mut cur_pair = 0;
         let mut cur_ch = 0;
         while bs.bits_left() > 3 {
-            let id = bs.read_bits_leq32(3)?;
+            let id = bs.read_bits_leq32(3).await?;
 
             match id {
                 0 => {
                     // ID_SCE
-                    let _tag = bs.read_bits_leq32(4)?;
+                    let _tag = bs.read_bits_leq32(4).await?;
                     self.set_pair(cur_pair, cur_ch, false)?;
-                    self.pairs[cur_pair].decode_ga_sce(bs, self.m4ainfo.otype)?;
+                    self.pairs[cur_pair].decode_ga_sce(bs, self.m4ainfo.otype).await?;
                     cur_pair += 1;
                     cur_ch += 1;
                 }
                 1 => {
                     // ID_CPE
-                    let _tag = bs.read_bits_leq32(4)?;
+                    let _tag = bs.read_bits_leq32(4).await?;
                     self.set_pair(cur_pair, cur_ch, true)?;
-                    self.pairs[cur_pair].decode_ga_cpe(bs, self.m4ainfo.otype)?;
+                    self.pairs[cur_pair].decode_ga_cpe(bs, self.m4ainfo.otype).await?;
                     cur_pair += 1;
                     cur_ch += 2;
                 }
@@ -1562,24 +1584,24 @@ impl AacDecoder {
                 }
                 3 => {
                     // ID_LFE
-                    let _tag = bs.read_bits_leq32(4)?;
+                    let _tag = bs.read_bits_leq32(4).await?;
                     self.set_pair(cur_pair, cur_ch, false)?;
-                    self.pairs[cur_pair].decode_ga_sce(bs, self.m4ainfo.otype)?;
+                    self.pairs[cur_pair].decode_ga_sce(bs, self.m4ainfo.otype).await?;
                     cur_pair += 1;
                     cur_ch += 1;
                 }
                 4 => {
                     // ID_DSE
-                    let _id = bs.read_bits_leq32(4)?;
-                    let align = bs.read_bit()?;
-                    let mut count = bs.read_bits_leq32(8)? as u32;
+                    let _id = bs.read_bits_leq32(4).await?;
+                    let align = bs.read_bit().await?;
+                    let mut count = bs.read_bits_leq32(8).await? as u32;
                     if count == 255 {
-                        count += bs.read_bits_leq32(8)? as u32;
+                        count += bs.read_bits_leq32(8).await? as u32;
                     }
                     if align {
                         bs.realign(); // ????
                     }
-                    bs.ignore_bits(count * 8)?; // no SBR payload or such
+                    bs.ignore_bits(count * 8).await?; // no SBR payload or such
                 }
                 5 => {
                     // ID_PCE
@@ -1587,14 +1609,14 @@ impl AacDecoder {
                 }
                 6 => {
                     // ID_FIL
-                    let mut count = bs.read_bits_leq32(4)? as usize;
+                    let mut count = bs.read_bits_leq32(4).await? as usize;
                     if count == 15 {
-                        count += bs.read_bits_leq32(8)? as usize;
+                        count += bs.read_bits_leq32(8).await? as usize;
                         count -= 1;
                     }
                     for _ in 0..count {
                         // ext payload
-                        bs.ignore_bits(8)?;
+                        bs.ignore_bits(8).await?;
                     }
                 }
                 7 => {
@@ -1620,16 +1642,17 @@ impl AacDecoder {
 
 }
 
+#[maybe_async(?Send)]
 impl Decoder for AacDecoder {
 
-    fn try_new(params: &CodecParameters, _: &DecoderOptions) -> Result<Self> {
+    async fn try_new(params: &CodecParameters, _: &DecoderOptions) -> Result<Self> {
 
         let mut m4ainfo = M4AInfo::new();
 
         // If extra data present, parse the audio specific config
         if let Some(extra_data_buf) = &params.extra_data {
             validate!(extra_data_buf.len() >= 2);
-            m4ainfo.read(extra_data_buf)?;
+            m4ainfo.read(extra_data_buf).await?;
         }
         else {
             // Otherwise, assume there is no ASC and use the codec parameters for ADTS.
@@ -1665,7 +1688,7 @@ impl Decoder for AacDecoder {
         })
     }
 
-    fn supported_codecs() -> &'static [CodecDescriptor] {
+    async fn supported_codecs() -> &'static [CodecDescriptor] {
         &[
             support_codec!(CODEC_TYPE_AAC, "aac", "Advanced Audio Coding"),
         ]
@@ -1675,7 +1698,7 @@ impl Decoder for AacDecoder {
         &self.params
     }
 
-    fn decode(&mut self, packet: &Packet) -> Result<AudioBufferRef<'_>> {
+    async fn decode(&mut self, packet: &Packet) -> Result<AudioBufferRef<'_>> {
         let reader = packet.as_buf_stream();
 
         // Clear the audio output buffer.
@@ -1686,7 +1709,7 @@ impl Decoder for AacDecoder {
 
         // Choose decode step based on the object type.
         match self.m4ainfo.otype {
-            M4AType::LC => self.decode_ga(&mut bs)?,
+            M4AType::LC => self.decode_ga(&mut bs).await?,
             _           => return unsupported_error("object type"),
         }
 

@@ -1,18 +1,23 @@
 [package]
-name = "symphonia-codec-aac"
-version = "0.2.0"
-description = "Pure Rust AAC decoder (a part of project Symphonia)."
-homepage = "https://github.com/pdeljanov/Symphonia"
-repository = "https://github.com/pdeljanov/Symphonia"
 authors = ["Philip Deljanov <philip.deljanov@gmail.com>", "Kostya Shishkov <kostya.shiskov@gmail.com>"]
-license = "MPL-2.0"
-readme = "README.md"
 categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
-keywords = ["audio", "codec", "decoder", "aac", "m4a"]
+description = "Pure Rust AAC decoder (a part of project Symphonia)."
 edition = "2018"
 exclude = ["scripts/*"]
+homepage = "https://github.com/pdeljanov/Symphonia"
+keywords = ["audio", "codec", "decoder", "aac", "m4a"]
+license = "MPL-2.0"
+name = "symphonia-codec-aac"
+readme = "README.md"
+repository = "https://github.com/pdeljanov/Symphonia"
+version = "0.2.0"
 
 [dependencies]
-log = "0.4"
 lazy_static = "1.4.0"
-symphonia-core = { version = "0.2", path = "../symphonia-core" }
+log = "0.4"
+symphonia-core = {version = "0.2", path = "../symphonia-core"}
+maybe-async = "0.2"
+async-trait = "0.1"
+
+[features]
+is_sync = ["symphonia-core/is_sync"]

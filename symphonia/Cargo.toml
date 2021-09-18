@@ -20,6 +20,10 @@ pcm = ["symphonia-codec-pcm"]
 wav = ["symphonia-format-wav"]
 ogg = ["symphonia-format-ogg"]
 isomp4 = ["symphonia-format-isomp4"]
+is_sync = [
+    "symphonia-core/is_sync",
+    "symphonia-codec-aac/is_sync"
+]
 
 [dependencies]
 lazy_static = "1.4.0"
